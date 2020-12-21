@@ -7,7 +7,7 @@
 struct object
 {
 	struct list_head list;
-	unsigned int refcnt;
+	atomic_t refcnt;
 	int id;
 	char name[32];
 	int popularity;
@@ -19,33 +19,15 @@ static LIST_HEAD(cache);
 static unsigned int cache_num = 0;
 #define MAX_CACHE_SIZE 10
 
-static void __object_put(struct object *obj)
-{
-	if (--obj->refcnt == 0)
-		kfree(obj);
-}
-
-static void __object_get(struct object *obj)
-{
-	obj->refcnt++;
-}
-
 void object_put(struct object *obj)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&cache_lock, flags);
-	__object_put(obj);
-	spin_unlock_irqrestore(&cache_lock, flags);
+	if (atomic_dec_and_test(&obj->refcnt))
+		kfree(obj);
 }
 
 void object_get(struct object *obj)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&cache_lock, flags);
-	__object_get(obj);
-	spin_unlock_irqrestore(&cache_lock, flags);
+	atomic_inc(&obj->refcnt);
 }
 
 /* Must be holding cache_lock */
@@ -68,7 +50,7 @@ static void __cache_delete(struct object *obj)
 {
 	BUG_ON(!obj);
 	list_del(&obj->list);
-	__object_put(obj);
+	object_put(obj);
 	cache_num--;
 }
 
@@ -97,7 +79,7 @@ int cache_add(int id, const char *name)
 	strlcpy(obj->name, name, sizeof(obj->name));
 	obj->id = id;
 	obj->popularity = 0;
-	obj->refcnt = 1; /* The cache holds a reference */
+	atomic_set(&obj->refcnt, 1); /* The cache holds a reference */
 
 	spin_lock_irqsave(&cache_lock, flags);
 	__cache_add(obj);
@@ -123,7 +105,7 @@ struct object *cache_find(int id)
 	spin_lock_irqsave(&cache_lock, flags);
 	obj = __cache_find(id);
 	if (obj)
-		__object_get(obj);
+		object_get(obj);
 	spin_unlock_irqrestore(&cache_lock, flags);
 
 	return obj;
