@@ -6,11 +6,17 @@
 
 struct object
 {
+	/* These two protected by cache_lock. */
 	struct list_head list;
-	atomic_t refcnt;
-	int id;
-	char name[32];
 	int popularity;
+
+	atomic_t refcnt;
+
+	/* Doesn't change once created. */
+	int id;
+
+	spinlock_t lock; /* Protects the name */
+	char name[32];
 };
 
 /* Protects the cache, cache_num, and the objects within it */
@@ -80,6 +86,7 @@ int cache_add(int id, const char *name)
 	obj->id = id;
 	obj->popularity = 0;
 	atomic_set(&obj->refcnt, 1); /* The cache holds a reference */
+	spin_lock_init(&obj->lock);
 
 	spin_lock_irqsave(&cache_lock, flags);
 	__cache_add(obj);
