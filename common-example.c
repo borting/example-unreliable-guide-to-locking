@@ -1,14 +1,18 @@
 #include <linux/list.h>
 #include <linux/slab.h>
 #include <linux/string.h>
+#include <linux/rcupdate.h>
 #include <linux/mutex.h>
 #include <asm/errno.h>
 
 struct object
 {
 	/* These two protected by cache_lock. */
+	/* This is protected by RCU */
 	struct list_head list;
 	int popularity;
+
+	struct rcu_head rcu;
 
 	atomic_t refcnt;
 
@@ -51,19 +55,25 @@ static struct object *__cache_find(int id)
 	return NULL;
 }
 
+/* Final discard done once we know no readers are looking. */
+static void cache_delete_rcu(void *arg)
+{
+	object_put(arg);
+}
+
 /* Must be holding cache_lock */
 static void __cache_delete(struct object *obj)
 {
 	BUG_ON(!obj);
-	list_del(&obj->list);
-	object_put(obj);
+	list_del_rcu(&obj->list);
 	cache_num--;
+	call_rcu(&obj->rcu, cache_delete_rcu);
 }
 
 /* Must be holding cache_lock */
 static void __cache_add(struct object *obj)
 {
-	list_add(&obj->list, &cache);
+	list_add_rcu(&obj->list, &cache);
 	if (++cache_num > MAX_CACHE_SIZE) {
 		struct object *i, *outcast = NULL;
 		list_for_each_entry(i, &cache, list) {
@@ -107,13 +117,12 @@ void cache_delete(int id)
 struct object *cache_find(int id)
 {
 	struct object *obj;
-	unsigned long flags;
 
-	spin_lock_irqsave(&cache_lock, flags);
+	rcu_read_lock();
 	obj = __cache_find(id);
 	if (obj)
 		object_get(obj);
-	spin_unlock_irqrestore(&cache_lock, flags);
+	rcu_read_unlock();
 
 	return obj;
 }
